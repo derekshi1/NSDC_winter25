@@ -1,8 +1,10 @@
+import os
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage, AIMessage
+from dotenv import load_dotenv
+load_dotenv()
 
-OPEN_AI_API_KEY = "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"
-
+OPEN_AI_API_KEY = os.getenv("API_KEY")
 # Initialize OpenAI chat model
 chat_model = ChatOpenAI(api_key=OPEN_AI_API_KEY, model="gpt-4o-mini")
 # Chat history
