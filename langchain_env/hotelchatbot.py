@@ -1,3 +1,4 @@
+import streamlit as st
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -5,9 +6,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
-import time
 from datetime import datetime, timedelta
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Load Hugging Face Chatbot
 tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
@@ -15,23 +15,22 @@ tokenizer.pad_token = tokenizer.eos_token
 model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
 
 # Function to generate chatbot response
-def generate_chatbot_response(user_input):
+def generate_chatbot_response(user_input: str) -> str:
     inputs = tokenizer(user_input + tokenizer.eos_token, return_tensors='pt', padding=True)
-    input_ids = inputs["input_ids"]
-    attention_mask = inputs["attention_mask"]
-
-    chat_history_ids = model.generate(
-        input_ids,
-        attention_mask=attention_mask,
+    chat_ids = model.generate(
+        inputs.input_ids,
+        attention_mask=inputs.attention_mask,
         max_length=1000,
         pad_token_id=tokenizer.eos_token_id,
         top_p=0.95,
         top_k=60,
         do_sample=True
     )
-
-    chatbot_response = tokenizer.decode(chat_history_ids[:, input_ids.shape[-1]:][0], skip_special_tokens=True)
-    return chatbot_response
+    # decode only new tokens
+    return tokenizer.decode(
+        chat_ids[:, inputs.input_ids.shape[-1]:][0],
+        skip_special_tokens=True
+    )
 
 # Updated: Find hotels using Selenium
 
@@ -39,18 +38,19 @@ def find_hotels(city):
     print(f"Searching hotels in {city.title()} using Selenium on Booking.com...")
 
     options = Options()
-    # options.add_argument("--headless")  # Uncomment for production use
+    #options.add_argument("--headless")  # Uncomment for production use
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
 
-    service = Service("C:/chromedriver/chromedriver.exe/chromedriver-win64/chromedriver.exe")
-    driver = webdriver.Chrome(service=service, options=options)
+    service = Service(ChromeDriverManager().install())
+    driver  = webdriver.Chrome(service=service, options=options)
 
     checkin = datetime.today() + timedelta(days=30)
     checkout = checkin + timedelta(days=2)
     checkin_str = checkin.strftime('%Y-%m-%d')
     checkout_str = checkout.strftime('%Y-%m-%d')
 
+    # Construct search URL with 10 rows
     city_query = city.replace(" ", "+")
     url = f"https://www.booking.com/searchresults.html?ss={city_query}&checkin={checkin_str}&checkout={checkout_str}&rows=10"
     driver.get(url)
@@ -88,59 +88,79 @@ def find_hotels(city):
     driver.quit()
     return hotels if hotels else ["No hotels found."]
 
-# Chatbot interaction
-def chatbot():
-    print("Hello! I'm your travel assistant chatbot. Ask me about hotels. Say 'exit' to quit.")
+#def of functions to get prices
+def extract_price(hotel):
+    try:
+        return float(hotel[2].replace('$', '').replace(',', ''))
+    except:
+        return float('inf')
 
-    while True:
-        user_input = input("You: ").strip().lower()
-        if user_input in ["exit", "quit", "bye"]:
-            print("Safe travels! Let me know if you need help in the future.")
-            break
 
-        if "hotel" in user_input and "in" in user_input:
-            city_name = user_input.split("in")[-1].strip()
+def extract_rating(hotel):
+    try:
+        return float(hotel[1])
+    except:
+        return 0.0
+    
 
-            sort_by = None
-            if any(keyword in user_input for keyword in ["cheap", "lowest", "price"]):
-                sort_by = "price"
-            elif any(keyword in user_input for keyword in ["top rated", "best rated", "highest", "rating"]):
-                sort_by = "rating"
 
-            hotel_data = find_hotels(city_name)
+# Streamlit app setup
+st.set_page_config(page_title="🏨 Travel Dashboard", layout="wide")
+st.title("🏖 Travel Assistant Dashboard")
 
-            def extract_price(hotel):
-                for part in hotel:
-                    if "$" in part:
-                        try:
-                            return float(part.replace("$", "").replace(",", "").strip())
-                        except:
-                            return float("inf")
-                return float("inf")
+#Initialize session state for follow-up logic and chat history
+if "last_city" not in st.session_state:
+    st.session_state["last_city"] = ""
+if "last_hotels" not in st.session_state:
+    st.session_state["last_hotels"] = []
+if "chat" not in st.session_state:
+    st.session_state["chat"] = []
 
-            def extract_rating(hotel):
-                try:
-                    return float(hotel[1].strip())
-                except:
-                    return 0.0
+#streamlit hotel search
+st.header("Search Hotels")
+city = st.text_input("Enter city name", value=st.session_state["last_city"])
+col1, col2, col3 = st.columns(3)
+with col1:
+    if st.button("🔎 Search"):
+        # New: Run scraper and store in session_state
+        st.session_state["last_city"] = city
+        st.session_state["last_hotels"] = find_hotels(city)
+with col2:
+    if st.button("💲 Cheapest") and st.session_state["last_hotels"]:
+        # New: Sort in-place by price
+        st.session_state["last_hotels"].sort(key=extract_price)
+with col3:
+    if st.button("⭐ Top Rated") and st.session_state["last_hotels"]:
+        # New: Sort in-place by rating
+        st.session_state["last_hotels"].sort(key=extract_rating, reverse=True)
 
-            if isinstance(hotel_data, list) and isinstance(hotel_data[0], tuple):
-                if sort_by == "price":
-                    hotel_data.sort(key=extract_price)
-                elif sort_by == "rating":
-                    hotel_data.sort(key=extract_rating, reverse=True)
+# New: Display table of top 5 hotels
+if st.session_state["last_hotels"]:
+    st.subheader(f"Results for {st.session_state['last_city'].title()}")
+    st.table(st.session_state["last_hotels"][:5])
 
-                hotel_data = hotel_data[:5]  # Limit to top 5
-                print(f"\nTop Hotels in {city_name.title()}\n{'='*40}")
-                for name, rating, price in hotel_data:
-                    print(f"🏨 {name}\n   ⭐ Rating: {rating} | 💲Price: {price}\n")
-            else:
-                print(hotel_data)
+st.markdown("---")
+#Chatbot Panel—————————————————————————————————————————
+st.header("General Chat")
+user_msg = st.text_input("You:", key="user_input")
+if st.button("Send") and user_msg:
+    # Determine if user is asking about hotels or general chat
+    u = user_msg.lower()
+    if "hotel" in u and "in" in u:
+        # New: mimic search acknowledgement
+        st.session_state["chat"].append(("You", user_msg))
+        st.session_state["chat"].append(("Bot", f"Searching hotels in {st.session_state['last_city'].title()}…"))
+    else:
+        # Existing: fallback to DialoGPT reply
+        reply = generate_chatbot_response(user_msg)
+        st.session_state["chat"].append(("You", user_msg))
+        st.session_state["chat"].append(("Bot", reply))
+    # Clear input box
+    st.session_state["user_input"] = ""
 
-        else:
-            chatbot_response = generate_chatbot_response(user_input)
-            print("Chatbot:", chatbot_response)
-
-# Run the chatbot
-if __name__ == "__main__":
-    chatbot()
+# New: Render chat history below
+for speaker, text in st.session_state["chat"]:
+    if speaker == "You":
+        st.markdown(f"**You:** {text}")
+    else:
+        st.markdown(f"**Bot:** {text}")
